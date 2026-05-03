@@ -6,8 +6,19 @@ import os
 
 app = Flask(__name__)
 
+# --- MODEL DEFINITION ---
+# IMPORTANT: This class MUST be defined in app.py so pickle can find it.
+# It must match the structure of the class used during training.
+class SalaryModel:
+    def __init__(self):
+        self.base = 30000
+        self.exp_coeff = 5000
+        self.skill_coeff = 2000
+
+    def predict(self, years, skill):
+        return self.base + (years * self.exp_coeff) + (skill * self.skill_coeff)
+
 # Initialize Rate Limiter
-# This tracks users by their IP address
 limiter = Limiter(
     get_remote_address,
     app=app,
@@ -21,11 +32,14 @@ try:
         model = pickle.load(file)
 except FileNotFoundError:
     model = None
+except Exception as e:
+    print(f"Error loading model: {e}")
+    model = None
 
 # --- API ENDPOINTS ---
 
 @app.route('/')
-@limiter.exempt # No limit for the landing page
+@limiter.exempt 
 def home():
     return jsonify({
         "message": "Salary Predictor API is online",
@@ -37,29 +51,26 @@ def home():
 
 @app.route('/health', methods=['GET'])
 def health_check():
-    """Endpoint for Render to check if the app is alive"""
     return jsonify({
         "status": "healthy",
         "model_loaded": model is not None
     }), 200
 
 @app.route('/predict', methods=['POST'])
-@limiter.limit("5 per minute") # Strict limit for the expensive prediction logic
+@limiter.limit("5 per minute") 
 def predict():
     if model is None:
-        return jsonify({"error": "Model file not found on server"}), 500
+        return jsonify({"error": "Model file not found or corrupted on server"}), 500
     
     try:
         data = request.get_json()
         
-        # Validation
         if not data or 'years' not in data or 'skill' not in data:
             return jsonify({"error": "Missing required fields: 'years' and 'skill'"}), 400
         
         years = float(data.get('years'))
         skill = int(data.get('skill'))
 
-        # Inference
         prediction = model.predict(years, skill)
 
         return jsonify({
@@ -73,7 +84,6 @@ def predict():
     except Exception as e:
         return jsonify({"error": "An internal error occurred"}), 500
 
-# Error handler for Rate Limiting
 @app.errorhandler(429)
 def ratelimit_handler(e):
     return jsonify({
