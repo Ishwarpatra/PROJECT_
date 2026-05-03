@@ -3,12 +3,12 @@ from flask_limiter import Limiter
 from flask_limiter.util import get_remote_address
 import pickle
 import os
+import sys
 
 app = Flask(__name__)
 
 # --- MODEL DEFINITION ---
 # IMPORTANT: This class MUST be defined in app.py so pickle can find it.
-# It must match the structure of the class used during training.
 class SalaryModel:
     def __init__(self):
         self.base = 30000
@@ -17,6 +17,13 @@ class SalaryModel:
 
     def predict(self, years, skill):
         return self.base + (years * self.exp_coeff) + (skill * self.skill_coeff)
+
+# --- NAMESPACE FIX FOR PICKLE ---
+# When Gunicorn runs, it imports this file as 'app'.
+# However, 'pickle' often looks for the class in the '__main__' module.
+# This line ensures 'SalaryModel' is available in the top-level namespace.
+import __main__
+__main__.SalaryModel = SalaryModel
 
 # Initialize Rate Limiter
 limiter = Limiter(
@@ -27,14 +34,16 @@ limiter = Limiter(
 )
 
 # Load the pickled model
+model = None
 try:
-    with open('model.pkl', 'rb') as file:
-        model = pickle.load(file)
-except FileNotFoundError:
-    model = None
+    # Ensure the file exists before attempting to load
+    if os.path.exists('model.pkl'):
+        with open('model.pkl', 'rb') as file:
+            model = pickle.load(file)
+    else:
+        print("Warning: model.pkl not found. Please run your training script.")
 except Exception as e:
     print(f"Error loading model: {e}")
-    model = None
 
 # --- API ENDPOINTS ---
 
