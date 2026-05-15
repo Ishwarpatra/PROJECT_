@@ -1,16 +1,37 @@
 from flask import Flask, request, jsonify
 from flask_limiter import Limiter
 from flask_limiter.util import get_remote_address
-from flask_cors import CORS
 import pickle
 import os
-import sys
+from dotenv import load_dotenv
+# Attempt to import flask_cors gracefully
+try:
+    from flask_cors import CORS
+    has_cors = True
+except ImportError:
+    has_cors = False
 
 app = Flask(__name__)
-CORS(app) # Enable CORS for frontend integration
+
+if has_cors:
+    CORS(app)
+
+# --- SECURITY ---
+# Define your secret API key here. 
+# In a real enterprise app, this would be hidden in a .env file!
+# Load environment variables from a .env file when present
+load_dotenv()
+
+# Read the API key from env; fall back to a default for local testing
+VALID_API_KEY = os.environ.get("VALID_API_KEY")
+if not VALID_API_KEY:
+    VALID_API_KEY = "MY_SECRET_API_KEY_123"
+    print(
+        "WARNING: `VALID_API_KEY` not set in environment; using insecure default."
+        " Create a .env file with VALID_API_KEY to secure the app."
+    )
 
 # --- MODEL DEFINITION ---
-# This class must match the structure of the one used during training.
 class SalaryModel:
     def __init__(self):
         self.base = 30000
@@ -21,8 +42,6 @@ class SalaryModel:
         return self.base + (years * self.exp_coeff) + (skill * self.skill_coeff)
 
 # --- ROBUST PICKLE LOADING FIX ---
-# This CustomUnpickler solves the 'AttributeError: module __main__ has no attribute' 
-# error that happens specifically on Render/Gunicorn.
 class ModelUnpickler(pickle.Unpickler):
     def find_class(self, module, name):
         if name == 'SalaryModel':
@@ -44,13 +63,11 @@ MODEL_PATH = os.path.join(os.path.dirname(__file__), 'model.pkl')
 try:
     if os.path.exists(MODEL_PATH):
         with open(MODEL_PATH, 'rb') as file:
-            # Use our custom unpickler instead of standard pickle.load
             model = ModelUnpickler(file).load()
-        print("✅ Model loaded successfully using ModelUnpickler")
-    else:
-        print(f"⚠️ Warning: {MODEL_PATH} not found.")
+        print(" Model loaded successfully")
 except Exception as e:
-    print(f"❌ Error loading model: {e}")
+    print(f"Server error occurred while loading model: {e}")
+    model = None
 
 # --- API ENDPOINTS ---
 
@@ -58,39 +75,37 @@ except Exception as e:
 @limiter.exempt 
 def home():
     return jsonify({
-        "message": "Salary Predictor API is online",
-        "status": "online",
-        "deployment_url": "https://project-w1nx.onrender.com/",
-        "endpoints": {
-            "predict": "/predict (POST)",
-            "health": "/health (GET)"
-        }
+        "message": "Salary Predictor API is online. Authentication required for /predict.",
+        "status": "SECURE"
     })
-
-@app.route('/health', methods=['GET'])
-def health_check():
-    return jsonify({
-        "status": "healthy",
-        "model_loaded": model is not None,
-        "python_version": sys.version
-    }), 200
 
 @app.route('/predict', methods=['POST'])
 @limiter.limit("10 per minute") 
 def predict():
+    # --- 1. API KEY VALIDATION BLOCK ---
+    # Extract the 'Authorization' header sent by the client
+    auth_header = request.headers.get("Authorization")
+    
+    # Check if the header exists and matches our exact Bearer token
+    expected_token = f"Bearer {VALID_API_KEY}"
+    if not auth_header or auth_header != expected_token:
+        return jsonify({
+            "error": "Unauthorized", 
+            "message": "Invalid or missing API Key. Access Denied."
+        }), 401 # 401 is the standard HTTP code for unauthorized access
+
+    # --- 2. MODEL INFERENCE BLOCK ---
     if model is None:
         return jsonify({"error": "Model not available on server"}), 500
     
     try:
         data = request.get_json()
-        
         if not data:
             return jsonify({"error": "No JSON data provided"}), 400
             
         years = float(data.get('years', 0))
         skill = int(data.get('skill', 0))
 
-        # Input validation
         if years < 0 or skill < 0:
             return jsonify({"error": "Values cannot be negative"}), 400
 
@@ -105,7 +120,9 @@ def predict():
     except (ValueError, TypeError):
         return jsonify({"error": "Invalid data format. Numbers expected."}), 400
     except Exception as e:
+        print(f"Unexpected error during prediction: {e}")
         return jsonify({"error": "Internal server error"}), 500
+
 
 @app.errorhandler(429)
 def ratelimit_handler(e):
@@ -116,6 +133,5 @@ def ratelimit_handler(e):
     }), 429
 
 if __name__ == '__main__':
-    # Local development settings
     port = int(os.environ.get("PORT", 5000))
     app.run(host='0.0.0.0', port=port)

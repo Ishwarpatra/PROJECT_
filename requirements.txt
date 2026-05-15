@@ -2,3 +2,4 @@ flask
 gunicorn
 flask-limiter
 flask-cors
+python-dotenv
